@@ -18,10 +18,10 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
       - name: Install dioxus-cli
-        run: CARGO_TARGET_DIR=`pwd`/target cargo install dioxus-cli
+        run: CARGO_TARGET_DIR=`pwd`/target cargo install dioxus-cli --version 0.7.10
 
       - name: Build
-        run: cd web && dx build --release 
+        run: cd web && dx build --release --base-path /interpreter
       
       - name: Save wasm dist artifact
         uses: actions/upload-artifact@v4
@@ -33,6 +33,9 @@ jobs:
   deploy:
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
     steps:
       - name: Download wasm dist artifact
         uses: actions/download-artifact@v4
@@ -43,10 +46,9 @@ jobs:
       - name: Deploy
         uses: crazy-max/ghaction-github-pages@v4
         with:
-          repo: emptyfridge0900/interpreter
           target_branch: gh-pages
           build_dir: public
           keep_history: false
           jekyll: false
         env:
-          GITHUB_TOKEN: ${{ secrets.token}}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
