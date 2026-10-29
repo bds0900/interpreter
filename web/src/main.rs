@@ -6,6 +6,7 @@ use std::{cell::RefCell, rc::Rc};
 
 use dioxus::prelude::*;
 use tracing::Level;
+use wasm_bindgen::JsCast;
 
 static CSS: Asset = asset!("/assets/main.css");
 fn main() {
@@ -103,6 +104,15 @@ puts("After double: ", map(a, double));"#;
 pub fn Hello() -> Element {
     let mut user_input = use_signal::<String>(|| "puts(\"hello world\")".to_string());
     let mut output = use_signal::<Vec<String>>(|| vec![]);
+    let mut caret = use_signal::<Option<(u32, u32)>>(|| None);
+    use_effect(move || {
+        let Some((start, end)) = caret() else {
+            return;
+        };
+        if let Some(textarea) = code_input() {
+            let _ = textarea.set_selection_range(start, end);
+        }
+    });
     let xx = move |str: &str| {
         output.push(str.to_owned());
     };
@@ -184,6 +194,29 @@ pub fn Hello() -> Element {
                                     wrap: "off",
                                     value: "{source}",
                                     oninput: move |event| user_input.set(event.value()),
+                                    onkeydown: move |event| {
+                                        if event.key() != Key::Tab {
+                                            return;
+                                        }
+                                        event.prevent_default();
+                                        let Some(textarea) = event
+                                            .downcast::<web_sys::KeyboardEvent>()
+                                            .and_then(|raw| raw.target())
+                                            .and_then(|target| {
+                                                target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()
+                                            })
+                                            .or_else(code_input)
+                                        else {
+                                            return;
+                                        };
+                                        let start = textarea.selection_start().ok().flatten().unwrap_or(0);
+                                        let end = textarea.selection_end().ok().flatten().unwrap_or(start);
+                                        let outdent = event.modifiers().contains(Modifiers::SHIFT);
+                                        let (next, sel_start, sel_end) =
+                                            apply_indent(&user_input.read(), start, end, outdent);
+                                        user_input.set(next);
+                                        caret.set(Some((sel_start, sel_end)));
+                                    },
                                 }
                             }
                         }
@@ -337,6 +370,107 @@ fn highlight(src: &str) -> Vec<Token> {
         }
     }
     out
+}
+
+const INDENT: &str = "    ";
+
+fn code_input() -> Option<web_sys::HtmlTextAreaElement> {
+    web_sys::window()?
+        .document()?
+        .get_element_by_id("codeInput")?
+        .dyn_into()
+        .ok()
+}
+
+fn apply_indent(source: &str, start_u16: u32, end_u16: u32, outdent: bool) -> (String, u32, u32) {
+    let mut start = utf16_to_byte(source, start_u16 as usize);
+    let mut end = utf16_to_byte(source, end_u16 as usize);
+    if start > end {
+        std::mem::swap(&mut start, &mut end);
+    }
+
+    if !outdent && !source[start..end].contains('\n') {
+        let mut next = String::with_capacity(source.len() + INDENT.len());
+        next.push_str(&source[..start]);
+        next.push_str(INDENT);
+        next.push_str(&source[end..]);
+        let cursor = byte_to_utf16(&next, start + INDENT.len()) as u32;
+        return (next, cursor, cursor);
+    }
+
+    let block_start = source[..start].rfind('\n').map(|i| i + 1).unwrap_or(0);
+    let selection_end = if end > start && source.as_bytes().get(end - 1) == Some(&b'\n') {
+        end - 1
+    } else {
+        end
+    };
+    let block_end = source[selection_end..]
+        .find('\n')
+        .map(|i| selection_end + i)
+        .unwrap_or(source.len());
+    let lines: Vec<&str> = source[block_start..block_end].split('\n').collect();
+
+    let mut new_block = String::new();
+    let mut new_start = start;
+    let mut new_end = end;
+    let mut old_at = block_start;
+    let mut new_at = block_start;
+    for (index, line) in lines.iter().enumerate() {
+        if index > 0 {
+            new_block.push('\n');
+            old_at += 1;
+            new_at += 1;
+        }
+        let remove = if outdent {
+            line.bytes().take_while(|byte| *byte == b' ').take(INDENT.len()).count()
+        } else {
+            0
+        };
+        let add = if outdent { 0 } else { INDENT.len() };
+        if (block_start..block_end).contains(&start) || start == block_end {
+            if (old_at..=old_at + line.len()).contains(&start) {
+                let into = start - old_at;
+                let into_new = if into <= remove { 0 } else { into - remove } + add;
+                new_start = new_at + into_new;
+            }
+        }
+        if (block_start..=block_end).contains(&end) && (old_at..=old_at + line.len()).contains(&end) {
+            let into = end - old_at;
+            let into_new = if into <= remove { 0 } else { into - remove } + add;
+            new_end = new_at + into_new;
+        }
+        if outdent {
+            new_block.push_str(&line[remove..]);
+        } else {
+            new_block.push_str(INDENT);
+            new_block.push_str(line);
+        }
+        old_at += line.len();
+        new_at += line.len() - remove + add;
+    }
+
+    let mut next = String::with_capacity(source.len() + new_block.len());
+    next.push_str(&source[..block_start]);
+    next.push_str(&new_block);
+    next.push_str(&source[block_end..]);
+    let sel_start = byte_to_utf16(&next, new_start.min(next.len())) as u32;
+    let sel_end = byte_to_utf16(&next, new_end.min(next.len())) as u32;
+    (next, sel_start, sel_end)
+}
+
+fn utf16_to_byte(text: &str, utf16_index: usize) -> usize {
+    let mut seen = 0usize;
+    for (byte, ch) in text.char_indices() {
+        if seen >= utf16_index {
+            return byte;
+        }
+        seen += ch.len_utf16();
+    }
+    text.len()
+}
+
+fn byte_to_utf16(text: &str, byte_index: usize) -> usize {
+    text[..byte_index.min(text.len())].chars().map(|ch| ch.len_utf16()).sum()
 }
 
 fn evaluate<'a>(input: String, output:Rc<RefCell<dyn FnMut(&str) + 'a>>){

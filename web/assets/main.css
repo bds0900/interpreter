@@ -146,7 +146,7 @@ textarea.code-input {
   padding: var(--pad-y) 16px 8px;
   background: transparent;
   font: 13px/var(--line-h) var(--font);
-  tab-size: 2;
+  tab-size: 4;
   white-space: pre;
   overflow: hidden;
 }
