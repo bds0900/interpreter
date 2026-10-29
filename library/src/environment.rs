@@ -23,8 +23,8 @@ impl Environment{
             env:Rc::new(RefCell::new(EnvData::new()))
         }
     }
-    pub fn get(&self, name: &String) -> Option<Object> {
-        self.env.borrow().get(name.to_string())
+    pub fn get(&self, name: &str) -> Option<Object> {
+        self.env.borrow().get(name)
     }
 
     pub fn set(&mut self,name:String,val:Object){
@@ -48,19 +48,11 @@ impl EnvData{
             outer:None
         }
     }
-    pub fn get(&self,name:String)->Option<Object>{
-        let value = self.store.get(&name);
-        match value {
-            Some(v)=>Some(v.clone()),
-            None=>{
-                if self.outer.is_some(){
-                    let outer_val =self.outer.clone().unwrap().get(&name);
-                    return outer_val;
-                }else{
-                    return None;
-                }
-            }
+    pub fn get(&self, name: &str) -> Option<Object> {
+        if let Some(value) = self.store.get(name) {
+            return Some(value.clone());
         }
+        self.outer.as_ref().and_then(|outer| outer.get(name))
     }
     pub fn set(&mut self,name:String,val:Object)->Object{
         self.store.insert(name, val.clone());

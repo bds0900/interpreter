@@ -1,6 +1,7 @@
 #![allow(non_snake_case)]
 use library::{
-    ast::Node, environment::Environment, evaluator::Evaluator, lexer::Lexer, object::Object, parser::Parser
+    builtin::is_builtin, environment::Environment, evaluator::evaluate as eval_program,
+    lexer::keyword_token, object::Object, parser::parse,
 };
 use std::{cell::RefCell, rc::Rc};
 
@@ -27,12 +28,6 @@ fn App() -> Element {
         }
     }
 }
-
-pub fn test (input:&str) {
-
-
-}
-static helloworld:&str = "puts(\"hello world\")";
 
 static builtins:&str =r#"let map ={
     true:[1,2,3,4,5,6],
@@ -101,8 +96,16 @@ let double = fn(x) { x * 2 };
 puts("Before double: ", a);
 puts("After double: ", map(a, double));"#;
 
+const SAMPLES: &[(&str, &str)] = &[
+    ("Hello World", "puts(\"hello world\")"),
+    ("Built-in", builtins),
+    ("Factorial", factorial),
+    ("FizzBuzz", fizzbuzz),
+    ("Double with Map", double_map),
+];
+
 pub fn Hello() -> Element {
-    let mut user_input = use_signal::<String>(|| "puts(\"hello world\")".to_string());
+    let mut user_input = use_signal(|| SAMPLES[0].1.to_string());
     let mut output = use_signal::<Vec<String>>(|| vec![]);
     let mut caret = use_signal::<Option<(u32, u32)>>(|| None);
     use_effect(move || {
@@ -118,14 +121,10 @@ pub fn Hello() -> Element {
     };
     let func = Rc::new(RefCell::new(xx));
     let source = user_input.read().clone();
-    let source_lines = line_count(&source);
-    let source_cols = column_count(&source);
-    let source_height = block_height(source_lines);
+    let source_metrics = metrics(&source);
     let printed = output.read().clone();
     let output_text = printed.join("\n");
-    let output_lines = line_count(&output_text);
-    let output_cols = column_count(&output_text);
-    let output_height = block_height(output_lines);
+    let output_metrics = metrics(&output_text);
     let tokens = highlight(&source);
 
     rsx! {
@@ -135,91 +134,62 @@ pub fn Hello() -> Element {
                 class: "pane input-section",
                 div {
                     class: "tabs",
-                    button {
-                        class: tab_class(&source, helloworld),
-                        r#type: "button",
-                        onclick: move |_| user_input.set(helloworld.to_string()),
-                        "Hello World"
-                    },
-                    button {
-                        class: tab_class(&source, builtins),
-                        r#type: "button",
-                        onclick: move |_| user_input.set(builtins.to_string()),
-                        "Built-in"
-                    },
-                    button {
-                        class: tab_class(&source, factorial),
-                        r#type: "button",
-                        onclick: move |_| user_input.set(factorial.to_string()),
-                        "Factorial"
-                    },
-                    button {
-                        class: tab_class(&source, fizzbuzz),
-                        r#type: "button",
-                        onclick: move |_| user_input.set(fizzbuzz.to_string()),
-                        "FizzBuzz"
-                    },
-                    button {
-                        class: tab_class(&source, double_map),
-                        r#type: "button",
-                        onclick: move |_| user_input.set(double_map.to_string()),
-                        "Double with Map"
-                    },
+                    for (label, sample) in SAMPLES {
+                        button {
+                            key: "{label}",
+                            class: tab_class(&source, sample),
+                            r#type: "button",
+                            onclick: move |_| user_input.set(sample.to_string()),
+                            "{label}"
+                        }
+                    }
                 },
-                div {
-                    class: "editor",
-                    div { class: "editor-title", "main.monkey" },
-                    div {
-                        class: "editor-scroll",
-                        div {
-                            class: "editor-grid",
-                            style: "--code-height: {source_height}px; --code-cols: {source_cols}",
-                            Gutter { count: source_lines },
-                            div {
-                                class: "code-layer",
-                                pre {
-                                    class: "highlight",
-                                    for (i, tok) in tokens.iter().enumerate() {
-                                        span {
-                                            key: "{i}",
-                                            class: "{tok.tone.class_name()}",
-                                            "{tok.text}"
-                                        }
-                                    }
-                                },
-                                textarea {
-                                    class: "code-input",
-                                    id: "codeInput",
-                                    spellcheck: "false",
-                                    wrap: "off",
-                                    value: "{source}",
-                                    oninput: move |event| user_input.set(event.value()),
-                                    onkeydown: move |event| {
-                                        if event.key() != Key::Tab {
-                                            return;
-                                        }
-                                        event.prevent_default();
-                                        let Some(textarea) = event
-                                            .downcast::<web_sys::KeyboardEvent>()
-                                            .and_then(|raw| raw.target())
-                                            .and_then(|target| {
-                                                target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()
-                                            })
-                                            .or_else(code_input)
-                                        else {
-                                            return;
-                                        };
-                                        let start = textarea.selection_start().ok().flatten().unwrap_or(0);
-                                        let end = textarea.selection_end().ok().flatten().unwrap_or(start);
-                                        let outdent = event.modifiers().contains(Modifiers::SHIFT);
-                                        let (next, sel_start, sel_end) =
-                                            apply_indent(&user_input.read(), start, end, outdent);
-                                        user_input.set(next);
-                                        caret.set(Some((sel_start, sel_end)));
-                                    },
-                                }
+                EditorFrame {
+                    title: "main.monkey",
+                    lines: source_metrics.lines,
+                    cols: source_metrics.cols,
+                    height: source_metrics.height,
+                    scroll_id: None,
+                    pre {
+                        class: "highlight",
+                        for (i, tok) in tokens.iter().enumerate() {
+                            span {
+                                key: "{i}",
+                                class: "{tok.tone.class_name()}",
+                                "{tok.text}"
                             }
                         }
+                    },
+                    textarea {
+                        class: "code-input",
+                        id: "codeInput",
+                        spellcheck: "false",
+                        wrap: "off",
+                        value: "{source}",
+                        oninput: move |event| user_input.set(event.value()),
+                        onkeydown: move |event| {
+                            if event.key() != Key::Tab {
+                                return;
+                            }
+                            event.prevent_default();
+                            let Some(textarea) = event
+                                .downcast::<web_sys::KeyboardEvent>()
+                                .and_then(|raw| raw.target())
+                                .and_then(|target| {
+                                    target.dyn_into::<web_sys::HtmlTextAreaElement>().ok()
+                                })
+                                .or_else(code_input)
+                            else {
+                                return;
+                            };
+                            let start = textarea.selection_start().ok().flatten().unwrap_or(0);
+                            let end = textarea.selection_end().ok().flatten().unwrap_or(start);
+                            let outdent = event.modifiers().contains(Modifiers::SHIFT);
+                            let (next, sel_start, sel_end) =
+                                apply_indent(&user_input.read(), start, end, outdent);
+                            user_input.set(next);
+                            caret.set(Some((sel_start, sel_end)));
+                        },
                     }
                 },
                 div {
@@ -239,22 +209,55 @@ pub fn Hello() -> Element {
             div {
                 class: "pane output-section",
                 div { class: "tabs-spacer" },
+                EditorFrame {
+                    title: "output",
+                    lines: output_metrics.lines,
+                    cols: output_metrics.cols,
+                    height: output_metrics.height,
+                    scroll_id: Some("output"),
+                    pre { class: "editor-text", "{output_text}" }
+                }
+            }
+        }
+    }
+}
+
+struct Metrics {
+    lines: usize,
+    cols: usize,
+    height: usize,
+}
+
+fn metrics(text: &str) -> Metrics {
+    let lines = line_count(text);
+    Metrics {
+        lines,
+        cols: column_count(text),
+        height: block_height(lines),
+    }
+}
+
+#[component]
+fn EditorFrame(
+    title: &'static str,
+    lines: usize,
+    cols: usize,
+    height: usize,
+    scroll_id: Option<&'static str>,
+    children: Element,
+) -> Element {
+    rsx! {
+        div {
+            class: "editor",
+            div { class: "editor-title", "{title}" },
+            div {
+                class: "editor-scroll",
+                id: scroll_id,
                 div {
-                    class: "editor",
-                    div { class: "editor-title", "output" },
-                    div {
-                        class: "editor-scroll",
-                        id: "output",
-                        div {
-                            class: "editor-grid",
-                            style: "--code-height: {output_height}px; --code-cols: {output_cols}",
-                            Gutter { count: output_lines },
-                            div {
-                                class: "code-layer",
-                                pre { class: "editor-text", "{output_text}" }
-                            }
-                        }
-                    }
+                    class: "editor-grid",
+                    style: "--code-height: {height}px; --code-cols: {cols}",
+                    Gutter { count: lines },
+                    div { class: "code-layer", {children} }
                 }
             }
         }
@@ -353,10 +356,12 @@ fn highlight(src: &str) -> Vec<Token> {
             while chars.peek().is_some_and(|n| n.is_ascii_alphanumeric() || *n == '_') {
                 text.push(chars.next().unwrap());
             }
-            let tone = match text.as_str() {
-                "let" | "fn" | "if" | "else" | "return" | "true" | "false" => Tone::Keyword,
-                "len" | "first" | "last" | "rest" | "push" | "puts" => Tone::Builtin,
-                _ => Tone::Ident,
+            let tone = if keyword_token(&text).is_some() {
+                Tone::Keyword
+            } else if is_builtin(&text) {
+                Tone::Builtin
+            } else {
+                Tone::Ident
             };
             out.push(Token { tone, text });
         } else if c.is_whitespace() {
@@ -476,18 +481,15 @@ fn byte_to_utf16(text: &str, byte_index: usize) -> usize {
 fn evaluate<'a>(input: String, output:Rc<RefCell<dyn FnMut(&str) + 'a>>){
 
     let mut env = Environment::new();
-    let l = Lexer::new(&input);
-    let mut p = Parser::new(l);
-    let program = p.parse_program();
+    let (program, errors) = parse(&input);
 
-    if p.errors().len() != 0 {
-        print_parser_error(p.errors,output.clone());
+    if !errors.is_empty() {
+        print_parser_error(errors,output.clone());
     }
 
-    let evaluator = Evaluator::new(output.clone());
-    let evaludated = evaluator.eval(&Node::Program(program), &mut env);
-    if evaludated != Object::Null {
-         evaludated.inspect();
+    let evaluated = eval_program(program, &mut env, output.clone());
+    if evaluated != Object::Null {
+         evaluated.inspect();
     }else{
         output.borrow_mut()("Null");
     }

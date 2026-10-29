@@ -30,20 +30,7 @@ pub fn eval(&self,node: &Node,env:&mut Environment) -> Object {
 }
 
 fn eval_program(&self,program:&Program,env:&mut Environment)->Object{
-    let mut result:Object = Object::Null;
-
-    for statement in &program.statements{
-        result = self.eval_statement(statement,env);
-        // if let Object::Return(value) = result{
-        //     return *value;
-        // }
-        match result{
-            Object::Return(value)=>return *value,
-            Object::Error(message)=>return Object::Error(message),
-            _=>continue
-        }
-    }
-    result
+    unwrap_return_value(self.eval_statement_list(&program.statements, env))
 }
 fn eval_statement(&self, statement:&Statement,env:&mut Environment)->Object{
     match statement {
@@ -70,11 +57,11 @@ fn eval_expression(&self, expression:&Expression,env:&mut Environment)->Object{
         },
         Expression::Call { token, function, arguments }=>{
             let func = self.eval_expression(function,env);
-            if is_error(func.clone()){
+            if is_error(&func){
                 return func;
             }
             let args = self.eval_expressions(arguments, env);
-            if args.len() ==1 && is_error(args[0].clone()){
+            if args.len() ==1 && is_error(&args[0]){
                 return args[0].clone();
             }
             //apply_function(func,args)
@@ -91,18 +78,18 @@ fn eval_expression(&self, expression:&Expression,env:&mut Environment)->Object{
         Expression::StringLiteral { token, value }=>Object::String(value.to_string()),
         Expression::ArrayLiteral { token, elements }=>{
             let elements = self.eval_expressions(elements, env);
-            if elements.len() ==1 && is_error(elements[0].clone()){
+            if elements.len() ==1 && is_error(&elements[0]){
 
             }
             Object::Array(elements.into())
         },
         Expression::Index { left, index }=>{
             let left = self.eval_expression(left,env);
-            if is_error(left.clone()){
+            if is_error(&left){
                 return left;
             }
             let index = self.eval_expression(index,env);
-            if is_error(index.clone()){
+            if is_error(&index){
                 return index;
             }
             return self.eval_index_expression(left,index);
@@ -111,7 +98,7 @@ fn eval_expression(&self, expression:&Expression,env:&mut Environment)->Object{
         _|Expression::Error=>Object::Null
     }
 }
-fn eval_hash_literal(&self,hash_pairs:&HashMap<Expression,Expression>,env: &mut Environment)->Object{
+fn eval_hash_literal(&self,hash_pairs:&[(Expression,Expression)],env: &mut Environment)->Object{
     let mut pairs:HashMap<Object,Object> = HashMap::new();
 
     for (key,value) in hash_pairs{
@@ -125,27 +112,29 @@ fn eval_hash_literal(&self,hash_pairs:&HashMap<Expression,Expression>,env: &mut 
     Object::Hash(pairs)
 }
 
-fn eval_block_statement(&self,block:&Statement,env:&mut Environment)->Object{
-    let mut result:Object = Object::Null;
-    if let Statement::Block { token, statements }=block{
-
-        for statement in statements{
-            result = self.eval(&Node::Statement(statement.clone()),env);
-    
-            match result{
-                Object::Return(val)=>return Object::Return(val),
-                Object::Error(message)=>return Object::Error(message),
-                _=>continue
-            }
+fn eval_statement_list(&self, statements: &[Statement], env: &mut Environment) -> Object {
+    let mut result = Object::Null;
+    for statement in statements {
+        result = self.eval_statement(statement, env);
+        match &result {
+            Object::Return(_) | Object::Error(_) => return result,
+            _ => {}
         }
     }
     result
+}
+fn eval_block_statement(&self,block:&Statement,env:&mut Environment)->Object{
+    if let Statement::Block { statements, .. } = block {
+        self.eval_statement_list(statements, env)
+    } else {
+        Object::Null
+    }
 }
 fn eval_expressions(&self,exps:&Vec<Expression>,env:&mut Environment)->Vec<Object>{
     let mut result:Vec<Object> = vec![];
     for e in exps{
         let evaluated=  self.eval_expression(e,env);
-        if is_error(evaluated.clone()){
+        if is_error(&evaluated){
             return vec![evaluated];
         }
         result.push(evaluated);
@@ -178,8 +167,8 @@ fn eval_infix_expression(&self, operator:&str,left:Object,right:Object)->Object{
         native_boolean_to_boolean_object(left==right)
     } else if operator == "!="{
         native_boolean_to_boolean_object(left != right)
-    } else if let (Object::Integer(l), Object::Integer(r))=(left.clone(),right.clone()){
-        self.eval_integer_infix_expression(operator,l,r)
+    } else if let (Object::Integer(l), Object::Integer(r))=(&left,&right){
+        self.eval_integer_infix_expression(operator,*l,*r)
     } else if left.get_type() != right.get_type(){
         new_error(format!("type mismatch: {} {} {}",left.get_type(),operator,right.get_type()))
     } else if left.get_type() =="STRING".to_owned() && right.get_type() == "STRING".to_owned(){
@@ -211,7 +200,7 @@ fn eval_string_infix_expression(&self, operator:String,left:Object,right:Object)
 
 }
 fn eval_identifier(&self, node:&Identifier,env:&Environment)->Object{
-    let val = env.get(&node.name.clone())
+    let val = env.get(&node.name)
     .or_else(||{
         if let Object::Builtin(b)= &self.builtins.get(&node.name){
             return Some(Object::Builtin(b.clone()));
@@ -261,7 +250,7 @@ fn eval_if_expression(&self, ie:&Expression,env:&mut Environment)->Object{
     if let Expression::If { condition, consequence, alternative }=ie{
         
         let condition = self.eval(&Node::Expression(condition.clone()),env);
-        if is_error(condition.clone()){
+        if is_error(&condition){
             return condition;
         }
         if is_truthy(condition){
@@ -338,20 +327,23 @@ fn is_truthy(obj:Object)->bool{
 pub fn new_error(format:String)->Object{
     Object::Error(format)
 }
-fn is_error(obj:Object)->bool{
-    if obj.get_type()=="ERROR"{
-        return true;
-    }
-    false
+fn is_error(obj:&Object)->bool{
+    matches!(obj, Object::Error(_))
+}
+
+pub fn evaluate<'a>(
+    program: Program,
+    env: &mut Environment,
+    output: Rc<RefCell<dyn FnMut(&str) + 'a>>,
+) -> Object {
+    Evaluator::new(output).eval(&Node::Program(program), env)
 }
 #[cfg(test)]
 mod tests {
     use core::{panic};
     use std::{any::Any, cell::RefCell, collections::HashMap, rc::Rc};
 
-    use crate::{ast::{Expression, Node}, environment::Environment, lexer::Lexer, object::Object, parser::Parser};
-
-    use super::Evaluator;
+    use crate::{environment::Environment, object::Object};
 
     //use super::eval;
 
@@ -702,15 +694,12 @@ return 1;
 
 
     fn test_eval(input: &str) -> Object {
-        let l = Lexer::new(input);
-        let mut p = Parser::new(l);
-        let program = p.parse_program();
+        let (program, _) = crate::parser::parse(input);
         let mut env=Environment::new();
         let func = Rc::new(RefCell::new(|str:&str|{
             println!("{str}")
         }));
-        let evaluator =Evaluator::new(func);
-        evaluator.eval(&Node::Program(program),&mut env)
+        super::evaluate(program, &mut env, func)
     }
     fn test_integer_object(obj: Object, expected: i64) -> bool {
         let result = match obj {
