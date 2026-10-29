@@ -10,7 +10,7 @@ jobs:
     if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/v2'
     steps:
       - name: checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -24,7 +24,7 @@ jobs:
         run: cd web && dx build --release --base-path /interpreter
       
       - name: Save wasm dist artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: interpreter-web-dist
           path: /home/runner/work/interpreter/interpreter/target/dx/web/release/web/public
@@ -38,13 +38,13 @@ jobs:
       contents: write
     steps:
       - name: Download wasm dist artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: interpreter-web-dist
           path: public
         
       - name: Deploy
-        uses: crazy-max/ghaction-github-pages@v4
+        uses: crazy-max/ghaction-github-pages@v5
         with:
           target_branch: gh-pages
           build_dir: public
