@@ -1,6 +1,6 @@
-use std::{any::Any, cell::RefCell, clone, collections::HashMap, hash::{Hash, Hasher}, rc::Rc};
+use std::rc::Rc;
 
-use crate::token::{self, Token};
+use crate::token::Token;
 
 #[derive(PartialEq, Eq, Clone, Debug)]
 pub enum Node {
@@ -30,7 +30,7 @@ impl Program {
     }
 }
 
-#[derive(PartialEq, Eq, Clone, Debug,Hash)]
+#[derive(PartialEq, Eq, Clone, Debug)]
 pub enum Statement{
     Let { 
         token: Token, 
@@ -109,14 +109,9 @@ pub enum Expression{
         index:Rc<Expression>
     },
     HashLiteral{
-        pairs:HashMap<Expression,Expression>
+        pairs:Vec<(Expression,Expression)>
     },
     Error
-}
-impl Hash for Expression{
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        core::mem::discriminant(self).hash(state);
-    }
 }
 
 impl Expression{
@@ -154,7 +149,7 @@ impl Expression{
     }
 }
 
-#[derive(PartialEq, Eq, Clone, Debug,Hash)]
+#[derive(PartialEq, Eq, Clone, Debug)]
 pub struct Identifier{
     pub name:String
 }

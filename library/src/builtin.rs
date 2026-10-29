@@ -2,6 +2,31 @@ use std::{cell::RefCell, rc::Rc};
 
 use crate::{evaluator::new_error, object::Object};
 
+pub fn is_builtin(name: &str) -> bool {
+    matches!(name, "len" | "first" | "last" | "rest" | "push" | "puts")
+}
+
+fn expect_array<'a>(
+    args: &'a [Object],
+    want_len: usize,
+    count_label: usize,
+    type_name: &str,
+) -> Result<&'a [Object], Object> {
+    if args.len() != want_len {
+        return Err(new_error(format!(
+            "wrong number of arguments. got={}, want={count_label}",
+            args.len()
+        )));
+    }
+    match &args[0] {
+        Object::Array(items) => Ok(items),
+        other => Err(new_error(format!(
+            "argument to '{type_name}' must be ARRAY, got={}",
+            other.get_type()
+        ))),
+    }
+}
+
 
 pub struct Builtins<'a>{
     output:Rc<RefCell<dyn FnMut(&str) + 'a>>
@@ -14,17 +39,12 @@ impl<'a> Builtins<'a>{
 
         builtins
     }
-    pub fn get(&self,fn_name:&str)->Object{
-        match fn_name{
-            "len"=>Object::Builtin("len".to_string()),
-            "first"=>Object::Builtin("first".to_string()),
-            "last"=>Object::Builtin("last".to_string()),
-            "rest"=>Object::Builtin("rest".to_string()),
-            "push"=>Object::Builtin("push".to_string()),
-            "puts"=>Object::Builtin("puts".to_string()),
-            _=>Object::Null
+    pub fn get(&self, fn_name: &str) -> Object {
+        if is_builtin(fn_name) {
+            Object::Builtin(fn_name.to_string())
+        } else {
+            Object::Null
         }
-
     }
     pub fn call(&self, name:&str, args:Vec<Object>)->Object{
         match name{
@@ -48,63 +68,34 @@ impl<'a> Builtins<'a>{
             _=>new_error(format!("argument to 'len' not supported, got={:?}",args[0]))
         }
     }
-    fn first(&self, args:Vec<Object>)->Object{
-        if args.len() !=1{
-            return new_error(format!("wrong number of arguments. got={}, want=1",args.len()));
-        }
-        if args[0].get_type()!="ARRAY"{
-            return new_error(format!("argument to 'first' must be ARRAY, got={}",args[0].get_type()));
-        }
-        match &args[0]{
-            Object::Array(arr)=>arr[0].clone(),
-            _=>Object::Null
+    fn first(&self, args: Vec<Object>) -> Object {
+        match expect_array(&args, 1, 1, "first") {
+            Ok(items) => items[0].clone(),
+            Err(error) => error,
         }
     }
-    fn last(&self, args:Vec<Object>)->Object{
-        if args.len() !=1{
-            return new_error(format!("wrong number of arguments. got={}, want=1",args.len()));
-        }
-        if args[0].get_type()!="ARRAY"{
-            return new_error(format!("argument to 'last' must be ARRAY, got={}",args[0].get_type()));
-        }
-        match &args[0]{
-            Object::Array(arr)=> if arr.len()>0 {arr[arr.len()-1].clone()}else {Object::Null},
-            _=>Object::Null
+    fn last(&self, args: Vec<Object>) -> Object {
+        match expect_array(&args, 1, 1, "last") {
+            Ok(items) if !items.is_empty() => items[items.len() - 1].clone(),
+            Ok(_) => Object::Null,
+            Err(error) => error,
         }
     }
-    fn rest(&self, args:Vec<Object>)->Object{
-        if args.len() !=1{
-            return new_error(format!("wrong number of arguments. got={}, want=1",args.len()));
+    fn rest(&self, args: Vec<Object>) -> Object {
+        match expect_array(&args, 1, 1, "rest") {
+            Ok(items) if !items.is_empty() => Object::Array(items[1..].to_vec().into()),
+            Ok(_) => Object::Null,
+            Err(error) => error,
         }
-        if args[0].get_type()!="ARRAY"{
-            return new_error(format!("argument to 'rest' must be ARRAY, got={}",args[0].get_type()));
-        }
-        match &args[0]{
-            Object::Array(arr)=> if arr.len()>0 {
-                let ar=arr[1..].iter().map(|x|x.clone()).collect();
-                Object::Array(ar)
-            }else {
-                Object::Null
+    }
+    fn push(&self, args: Vec<Object>) -> Object {
+        match expect_array(&args, 2, 1, "rest") {
+            Ok(items) => {
+                let mut copied = items.to_vec();
+                copied.push(args[1].clone());
+                Object::Array(copied.into())
             }
-            ,
-            _=>Object::Null
-        }
-    }
-    fn push(&self, args:Vec<Object>)->Object{
-        if args.len() !=2{
-            return new_error(format!("wrong number of arguments. got={}, want=1",args.len()));
-        }
-        if args[0].get_type()!="ARRAY"{
-            return new_error(format!("argument to 'rest' must be ARRAY, got={}",args[0].get_type()));
-        }
-        match &args[0]{
-            Object::Array(arr)=>{
-                //let length = arr.len();
-                let mut ar=arr.iter().map(|x|x.clone()).collect::<Vec<Object>>();
-                ar.push(args[1].clone());
-                Object::Array(ar.into())
-            },
-            _=>Object::Null
+            Err(error) => error,
         }
     }
     pub fn puts(&self, args:Vec<Object>)->Object{

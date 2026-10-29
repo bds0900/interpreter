@@ -1,4 +1,4 @@
-use std::{collections::HashMap, rc::Rc};
+use std::rc::Rc;
 
 use crate::{
     ast::{
@@ -7,6 +7,68 @@ use crate::{
     lexer::Lexer,
     token::{self, Token},
 };
+
+#[derive(Clone, Copy)]
+enum PrefixKind {
+    Ident,
+    Int,
+    String,
+    Prefix,
+    Bool,
+    Group,
+    If,
+    Function,
+    Array,
+    Hash,
+}
+
+fn prefix_kind(token: &Token) -> Option<PrefixKind> {
+    Some(match token {
+        Token::IDENT(_) => PrefixKind::Ident,
+        Token::INT(_) => PrefixKind::Int,
+        Token::STRING(_) => PrefixKind::String,
+        Token::BANG | Token::MINUS => PrefixKind::Prefix,
+        Token::TRUE | Token::FALSE => PrefixKind::Bool,
+        Token::LPAREN => PrefixKind::Group,
+        Token::IF => PrefixKind::If,
+        Token::FUNCTION => PrefixKind::Function,
+        Token::LBRACKET => PrefixKind::Array,
+        Token::LBRACE => PrefixKind::Hash,
+        _ => return None,
+    })
+}
+
+#[derive(Clone, Copy)]
+enum InfixKind {
+    Infix,
+    Call,
+    Index,
+}
+
+fn infix_kind(token: &Token) -> Option<InfixKind> {
+    Some(match token {
+        Token::PLUS
+        | Token::MINUS
+        | Token::SLASH
+        | Token::MOD
+        | Token::ASTERISK
+        | Token::EQ
+        | Token::NOT_EQ
+        | Token::LT
+        | Token::GT
+        | Token::LTEQ
+        | Token::GTEQ => InfixKind::Infix,
+        Token::LPAREN => InfixKind::Call,
+        Token::LBRACKET => InfixKind::Index,
+        _ => return None,
+    })
+}
+
+pub fn parse(input: &str) -> (Program, Vec<String>) {
+    let mut parser = Parser::new(Lexer::new(input));
+    let program = parser.parse_program();
+    (program, parser.errors)
+}
 
 #[derive(PartialEq, Eq, Hash, PartialOrd)]
 pub enum Precedences {
@@ -20,78 +82,26 @@ pub enum Precedences {
     INDEX,
 }
 
-type PrefixParseFn = fn(&mut Parser) -> Expression;
-type InfixParseFn = fn(&mut Parser, ex: Expression) -> Expression;
 pub struct Parser {
     l: Lexer,
     cur_token: Token,
     peek_token: Token,
     pub errors: Vec<String>,
-    prefix_parse_fns: HashMap<String, PrefixParseFn>,
-    infix_parse_fns: HashMap<String, InfixParseFn>,
-
-    //for testing purpose
-    cur: String,
-    peek: String,
 }
 impl Parser {
     pub fn new(mut l: Lexer) -> Parser {
         let current = l.next_token();
         let peek = l.next_token();
-        let mut p = Parser {
+        Parser {
             l,
             cur_token: current,
             peek_token: peek,
             errors: vec![],
-            prefix_parse_fns: HashMap::new(),
-            infix_parse_fns: HashMap::new(),
-            cur: "".to_string(),
-            peek: "".to_string(),
-        };
-
-        p.register_prefix("ident".to_owned(), Parser::parse_identifier);
-        p.register_prefix("int".to_owned(), Parser::parse_integer_literal);
-        p.register_prefix("string".to_string(), Parser::parse_string_literal);
-        p.register_prefix(Token::BANG.token_type(), Parser::parse_prefix_expression);
-        p.register_prefix(Token::MINUS.token_type(), Parser::parse_prefix_expression);
-        p.register_prefix(Token::TRUE.token_type(), Parser::parse_boolean);
-        p.register_prefix(Token::FALSE.token_type(), Parser::parse_boolean);
-        p.register_prefix(Token::LPAREN.token_type(), Parser::parse_grouped_expression);
-        p.register_prefix(Token::IF.token_type(), Parser::parse_if_expression);
-        p.register_prefix(Token::FUNCTION.token_type(),Parser::parse_functional_literal);
-        p.register_prefix(Token::LBRACKET.token_type(),Parser::parse_array_literal);
-        p.register_prefix(Token::LBRACE.token_type(),Parser::parse_hash_literal);
-
-        p.register_infix(Token::PLUS.token_type(), Parser::parse_infix_expression);
-        p.register_infix(Token::MINUS.token_type(), Parser::parse_infix_expression);
-        p.register_infix(Token::SLASH.token_type(), Parser::parse_infix_expression);
-        p.register_infix(Token::MOD.token_type(), Parser::parse_infix_expression);
-        p.register_infix(Token::ASTERISK.token_type(), Parser::parse_infix_expression);
-        p.register_infix(Token::EQ.token_type(), Parser::parse_infix_expression);
-        p.register_infix(Token::NOT_EQ.token_type(), Parser::parse_infix_expression);
-        p.register_infix(Token::LT.token_type(), Parser::parse_infix_expression);
-        p.register_infix(Token::GT.token_type(), Parser::parse_infix_expression);
-        p.register_infix(Token::LTEQ.token_type(), Parser::parse_infix_expression);
-        p.register_infix(Token::GTEQ.token_type(), Parser::parse_infix_expression);
-        p.register_infix(Token::LPAREN.token_type(), Parser::parse_call_expression);
-        p.register_infix(Token::LBRACKET.token_type(), Parser::parse_index_expression);
-
-
-
-        p
-    }
-    pub fn register_prefix(&mut self, token_type: String, func: PrefixParseFn) {
-        self.prefix_parse_fns.insert(token_type, func);
-    }
-    pub fn register_infix(&mut self, token_type: String, func: InfixParseFn) {
-        self.infix_parse_fns.insert(token_type, func);
+        }
     }
     pub fn next_token(&mut self) {
         self.cur_token = self.peek_token.clone();
         self.peek_token = self.l.next_token();
-        //testing
-        self.cur = self.cur_token.token_value().clone();
-        self.peek = self.peek_token.token_value().clone();
     }
     pub fn parse_program(&mut self) -> Program {
         let mut program = ast::Program::new();
@@ -105,28 +115,12 @@ impl Parser {
         program
     }
     fn parse_statement(&mut self) -> Option<Statement> {
-        match &self.cur_token {
-            Token::LET => {
-                let stmt = self.parse_let_statement();
-                if stmt.is_none() {
-                    return None;
-                }
-                stmt
-            }
-            Token::RETURN => {
-                let stmt = self.parse_return_statement();
-                if stmt.is_none() {
-                    return None;
-                }
-                stmt
-            }
-            _ => {
-                let stmt = self.parse_expression_statement();
-                if stmt.is_none() {
-                    return None;
-                }
-                stmt
-            }
+        if matches!(self.cur_token, Token::LET) {
+            self.parse_let_statement()
+        } else if matches!(self.cur_token, Token::RETURN) {
+            self.parse_return_statement()
+        } else {
+            self.parse_expression_statement()
         }
     }
 
@@ -209,31 +203,44 @@ impl Parser {
 
 
     fn parse_expression(&mut self, precedence: Precedences) -> Expression {
-        let prefix = self.prefix_parse_fns.get(&self.cur_token.token_type());
-        if prefix.is_none() {
+        let Some(prefix) = prefix_kind(&self.cur_token) else {
             self.no_prefix_parse_fn_error(self.cur_token.clone());
             return Expression::Error;//원본에서는 nil을 return함
-        }
-        let prefix = prefix.unwrap();
-        let mut left_exp = prefix(self);
+        };
+        let mut left_exp = self.dispatch_prefix(prefix);
 
         while !self.peek_token_is(Token::SEMICOLON) && precedence < self.peek_precedence() {
-            let infix = self.infix_parse_fns.get(&self.peek_token.token_type());
-            if infix.is_none() {
+            let Some(infix) = infix_kind(&self.peek_token) else {
                 return left_exp;
-            }
+            };
             self.next_token();
-
-            //self.next_token() borrow mutably, so cannot continu using infix variable.
-            //let infix=infix.unwrap();
-            let infix = self
-                .infix_parse_fns
-                .get(&self.cur_token.token_type())
-                .unwrap();
-            left_exp = infix(self, left_exp);
+            left_exp = self.dispatch_infix(infix, left_exp);
         }
 
         left_exp
+    }
+
+    fn dispatch_prefix(&mut self, kind: PrefixKind) -> Expression {
+        match kind {
+            PrefixKind::Ident => self.parse_identifier(),
+            PrefixKind::Int => self.parse_integer_literal(),
+            PrefixKind::String => self.parse_string_literal(),
+            PrefixKind::Prefix => self.parse_prefix_expression(),
+            PrefixKind::Bool => self.parse_boolean(),
+            PrefixKind::Group => self.parse_grouped_expression(),
+            PrefixKind::If => self.parse_if_expression(),
+            PrefixKind::Function => self.parse_functional_literal(),
+            PrefixKind::Array => self.parse_array_literal(),
+            PrefixKind::Hash => self.parse_hash_literal(),
+        }
+    }
+
+    fn dispatch_infix(&mut self, kind: InfixKind, left: Expression) -> Expression {
+        match kind {
+            InfixKind::Infix => self.parse_infix_expression(left),
+            InfixKind::Call => self.parse_call_expression(left),
+            InfixKind::Index => self.parse_index_expression(left),
+        }
     }
 
     fn parse_identifier(&mut self) -> Expression {
@@ -398,7 +405,7 @@ impl Parser {
         exp
     }
     fn parse_hash_literal(&mut self)->Expression{
-        let mut pairs:HashMap<Expression,Expression> = HashMap::new();
+        let mut pairs = Vec::new();
 
         while !self.peek_token_is(Token::RBRACE){
             self.next_token();
@@ -408,7 +415,7 @@ impl Parser {
             }
             self.next_token();
             let value = self.parse_expression(Precedences::LOWEST);
-            pairs.insert(key, value);
+            pairs.push((key, value));
 
             if !self.peek_token_is(Token::RBRACE) && !self.expect_peek(Token::COMMA){
                 return Expression::Error;
@@ -478,10 +485,10 @@ impl Parser {
 #[cfg(test)]
 mod tests {
     use core::panic;
-    use std::{any::{Any, TypeId}, collections::HashMap, rc::Rc};
+    use std::collections::HashMap;
 
     use crate::{
-        ast::{Expression,Identifier, Program, Statement},
+        ast::{Expression, Program, Statement},
         lexer::Lexer,
     };
 
@@ -489,10 +496,10 @@ mod tests {
 
     #[test]
     fn test_let_statements(){
-        let tests:Vec<(&str,&str,Box<dyn Any>)> = vec![
-            ("let x = 5;", "x", Box::new(5)),
-            ("let y = true;", "y", Box::new(true)),
-            ("let foobar = y;", "foobar", Box::new("y")),
+        let tests:Vec<(&str,&str,Lit)> = vec![
+            ("let x = 5;", "x", Lit::Int(5)),
+            ("let y = true;", "y", Lit::Bool(true)),
+            ("let foobar = y;", "foobar", Lit::Ident("y")),
         ];
 
         for tt in tests{
@@ -540,10 +547,10 @@ mod tests {
 
     #[test]
     fn test_return_statements(){
-        let tests:Vec<(&str,Box<dyn Any>)> = vec![
-            ("return 5;", Box::new(5)),
-            ("return 5-1;", Box::new(4)),
-            ("return true;", Box::new(true)),
+        let tests:Vec<(&str,Lit)> = vec![
+            ("return 5;", Lit::Int(5)),
+            ("return 5-1;", Lit::Int(4)),
+            ("return true;", Lit::Bool(true)),
         ];
 
         for tt in tests{
@@ -669,18 +676,18 @@ mod tests {
     }
     #[test]
     fn test_parsing_infix_expressions() {
-        let infix_tests: Vec<(&str, Box<dyn Any>, &str, Box<dyn Any>)> = vec![
-            ("5+5;", Box::new(5_i64), "+", Box::new(5_i64)),
-            ("5-5;", Box::new(5_i64), "-", Box::new(5_i64)),
-            ("5*5;", Box::new(5_i64), "*", Box::new(5_i64)),
-            ("5/5;", Box::new(5_i64), "/", Box::new(5_i64)),
-            ("5>5;", Box::new(5_i64), ">", Box::new(5_i64)),
-            ("5<5;", Box::new(5_i64), "<", Box::new(5_i64)),
-            ("5==5;", Box::new(5_i64), "==", Box::new(5_i64)),
-            ("5!=5;", Box::new(5_i64), "!=", Box::new(5_i64)),
-            ("true == true", Box::new(true), "==", Box::new(true)),
-            ("true != false", Box::new(true), "!=", Box::new(false)),
-            ("false == false", Box::new(false), "==", Box::new(false)),
+        let infix_tests: Vec<(&str, Lit, &str, Lit)> = vec![
+            ("5+5;", Lit::Int(5), "+", Lit::Int(5)),
+            ("5-5;", Lit::Int(5), "-", Lit::Int(5)),
+            ("5*5;", Lit::Int(5), "*", Lit::Int(5)),
+            ("5/5;", Lit::Int(5), "/", Lit::Int(5)),
+            ("5>5;", Lit::Int(5), ">", Lit::Int(5)),
+            ("5<5;", Lit::Int(5), "<", Lit::Int(5)),
+            ("5==5;", Lit::Int(5), "==", Lit::Int(5)),
+            ("5!=5;", Lit::Int(5), "!=", Lit::Int(5)),
+            ("true == true", Lit::Bool(true), "==", Lit::Bool(true)),
+            ("true != false", Lit::Bool(true), "!=", Lit::Bool(false)),
+            ("false == false", Lit::Bool(false), "==", Lit::Bool(false)),
         ];
         for tt in infix_tests {
             let l = Lexer::new(tt.0);
@@ -765,7 +772,7 @@ mod tests {
         }
         if let Statement::Expression { token, expression } = program.statements[0].clone(){
             if let Expression::If { condition, consequence, alternative }=expression{
-                if !test_infix_expression(&condition, Box::new("x"), "<", Box::new("y")) {
+                if !test_infix_expression(&condition, Lit::Ident("x"), "<", Lit::Ident("y")) {
                     return;
                 }
                 
@@ -815,7 +822,7 @@ mod tests {
         if let Statement::Expression { token, expression }= program.statements[0].clone(){
 
             if let Expression::If { condition, consequence, alternative }= expression{
-                if !test_infix_expression(condition.as_ref(), Box::new("x"), "<", Box::new("y")) {
+                if !test_infix_expression(condition.as_ref(), Lit::Ident("x"), "<", Lit::Ident("y")) {
                     return;
                 }
 
@@ -874,15 +881,15 @@ mod tests {
 
                 let par1 = parameters[0].clone();
                 let par2 = parameters[1].clone();
-                test_literal_expression(&Expression::Identifier(par1), Box::new("x"));
-                test_literal_expression(&Expression::Identifier(par2), Box::new("y"));
+                test_literal_expression(&Expression::Identifier(par1), Lit::Ident("x"));
+                test_literal_expression(&Expression::Identifier(par2), Lit::Ident("y"));
 
                 if let Statement::Block { token, statements } = &*body{
                     if statements.len()!=1{
                         panic!("function.Body.Statements has not 1 statements. got={}", statements.len());
                     }
                     if let Statement::Expression { token, expression } = statements[0].clone(){
-                        test_infix_expression(&expression,Box::new("x"),"+",Box::new("y"),);
+                        test_infix_expression(&expression,Lit::Ident("x"),"+",Lit::Ident("y"),);
                     }else{
                         panic!("function body stmt is not ast.ExpressionStatement.");
                     }
@@ -928,7 +935,7 @@ mod tests {
                     }
                     
                     for (i,ident) in tt.1.into_iter().enumerate(){
-                        test_literal_expression(&&Expression::Identifier(parameters[i].clone()), Box::new(ident));
+                        test_literal_expression(&&Expression::Identifier(parameters[i].clone()), Lit::Ident(ident));
                     }
                 }else{
 
@@ -962,9 +969,9 @@ mod tests {
                 if arguments.len() != 3{
                     panic!("wrong length of arguments. got={}",arguments.len());
                 }
-                test_literal_expression(&arguments[0], Box::new(1));
-                test_infix_expression(&arguments[1], Box::new(2),"*",Box::new(3));
-                test_infix_expression(&arguments[2], Box::new(4),"+",Box::new(5));
+                test_literal_expression(&arguments[0], Lit::Int(1));
+                test_infix_expression(&arguments[1], Lit::Int(2),"*",Lit::Int(3));
+                test_infix_expression(&arguments[2], Lit::Int(4),"+",Lit::Int(5));
             }else{
                 panic!("stmt.expression is not CAllExpression");
             }
@@ -1009,8 +1016,8 @@ mod tests {
                     panic!("elements len() not 3. got={}",elements.len());
                 }
                 test_integer_literal(&elements[0], 1);
-                test_infix_expression(&elements[1], Box::new(2_i64), "*", Box::new(2_i64));
-                test_infix_expression(&elements[2], Box::new(3_i64), "+", Box::new(3_i64));
+                test_infix_expression(&elements[1], Lit::Int(2), "*", Lit::Int(2));
+                test_infix_expression(&elements[2], Lit::Int(3), "+", Lit::Int(3));
             }else{
                 panic!("exp not ArrayLiterl");
             }
@@ -1030,7 +1037,7 @@ mod tests {
                 if !test_identifier(&left, "myArray".to_string()){
                     return;
                 }
-                if !test_infix_expression(&index, Box::new(1), "+", Box::new(1)){
+                if !test_infix_expression(&index, Lit::Int(1), "+", Lit::Int(1)){
                     return;
                 }
             }else{
@@ -1108,13 +1115,13 @@ mod tests {
                     if let Expression::StringLiteral { token, value } = k{
                         match value.as_str(){
                             "one"=>{
-                                test_infix_expression(v, Box::new(0_i64), "+", Box::new(1_i64));
+                                test_infix_expression(v, Lit::Int(0), "+", Lit::Int(1));
                             },
                             "two"=>{
-                                test_infix_expression(v, Box::new(0_i64), "+", Box::new(1_i64));
+                                test_infix_expression(v, Lit::Int(0), "+", Lit::Int(1));
                             },
                             "three"=>{
-                                test_infix_expression(v, Box::new(0_i64), "+", Box::new(1_i64));
+                                test_infix_expression(v, Lit::Int(0), "+", Lit::Int(1));
                             },
                             _=>{
                                 println!("No test function for kye {} found",value);
@@ -1130,7 +1137,14 @@ mod tests {
     }
 
 
-    fn test_infix_expression(exp: &Expression, left1: Box<dyn Any>, operator1: &str, right1: Box<dyn Any>) -> bool {
+    #[derive(Clone, Copy)]
+    enum Lit<'a> {
+        Int(i64),
+        Bool(bool),
+        Ident(&'a str),
+    }
+
+    fn test_infix_expression(exp: &Expression, left1: Lit, operator1: &str, right1: Lit) -> bool {
 
         if let Expression::Infix { token, left, operator, right }=exp{
             if !test_literal_expression(left.as_ref(), left1) {
@@ -1150,27 +1164,11 @@ mod tests {
 
     }
 
-    fn test_literal_expression(exp: &Expression, expected: Box<dyn Any>) -> bool {
-        // match exp{
-        //     Expression::Boolean { token, value }=>test_boolean_literal(),
-        //     Expression::IntegerLiteral { value }=>test_integer_literal(),
-        //     Expression::Identifier(ident)=>test_identifier(),
-        //     _=>false
-        // }
-        if (&*expected).type_id() == TypeId::of::<usize>() {
-            test_integer_literal(exp, *expected.downcast::<usize>().unwrap() as i64)
-        } else if (&*expected).type_id() == TypeId::of::<i32>() {
-            test_integer_literal(exp, *expected.downcast::<i32>().unwrap() as i64)
-        } else if (&*expected).type_id() == TypeId::of::<i64>() {
-            test_integer_literal(exp, *expected.downcast::<i64>().unwrap())
-        } else if (&*expected).type_id() == TypeId::of::<String>() {
-            test_identifier(exp, *expected.downcast::<String>().unwrap())
-        } else if (&*expected).type_id() == TypeId::of::<&str>() {
-            test_identifier(exp, (*expected.downcast::<&str>().unwrap()).to_string())
-        } else if (&*expected).type_id() == TypeId::of::<bool>() {
-            test_boolean_literal(exp, *expected.downcast::<bool>().unwrap())
-        } else {
-            false
+    fn test_literal_expression(exp: &Expression, expected: Lit) -> bool {
+        match expected {
+            Lit::Int(value) => test_integer_literal(exp, value),
+            Lit::Bool(value) => test_boolean_literal(exp, value),
+            Lit::Ident(value) => test_identifier(exp, value.to_string()),
         }
     }
 

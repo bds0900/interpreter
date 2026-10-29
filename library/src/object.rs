@@ -20,6 +20,19 @@ pub enum Object{
 impl Hash for Object{
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         core::mem::discriminant(self).hash(state);
+        match self {
+            Object::Integer(value) => value.hash(state),
+            Object::Boolean(value) => value.hash(state),
+            Object::String(value) => value.hash(state),
+            Object::Null => {}
+            Object::Return(_)
+            | Object::Function { .. }
+            | Object::Builtin(_)
+            | Object::Error(_)
+            | Object::Array(_)
+            | Object::Hash(_)
+            | Object::Unknown => {}
+        }
     }
 }
 

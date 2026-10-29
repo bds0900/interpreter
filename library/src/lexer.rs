@@ -1,6 +1,19 @@
-use std::{collections::HashMap, str::from_utf8};
+use std::str::from_utf8;
 
 use crate::token::{self, Token};
+
+pub fn keyword_token(ident: &str) -> Option<Token> {
+    match ident {
+        "fn" => Some(Token::FUNCTION),
+        "let" => Some(Token::LET),
+        "true" => Some(Token::TRUE),
+        "false" => Some(Token::FALSE),
+        "if" => Some(Token::IF),
+        "else" => Some(Token::ELSE),
+        "return" => Some(Token::RETURN),
+        _ => None,
+    }
+}
 
 pub struct Lexer {
     pub input: Vec<u8>,
@@ -70,55 +83,15 @@ impl Lexer {
             b'"'=>{
                 tok=Token::STRING(self.read_string())
             },
-            b'=' => {
-                tok = {
-                    if self.peek_char() == b'=' {
-                        let ch = self.ch;
-                        self.read_char();
-                        from_utf8(&[ch, self.ch]).unwrap().to_string();
-                        Token::EQ
-                    } else {
-                        Token::ASSIGN
-                    }
-                }
-            }
+            b'=' => tok = self.if_next(b'=', Token::EQ, Token::ASSIGN),
             b'+' => tok = Token::PLUS,
             b'-' => tok = Token::MINUS,
-            b'!' => {
-                tok = {
-                    if self.peek_char() == b'=' {
-                        let ch = self.ch;
-                        self.read_char();
-                        from_utf8(&[ch, self.ch]).unwrap().to_string();
-                        Token::NOT_EQ
-                    } else {
-                        Token::BANG
-                    }
-                }
-            }
+            b'!' => tok = self.if_next(b'=', Token::NOT_EQ, Token::BANG),
             b'*' => tok = Token::ASTERISK,
             b'/' => tok = Token::SLASH,
             b'%' => tok = Token::MOD,
-            b'<' => tok = {
-                if self.peek_char() == b'='{
-                    let ch = self.ch;
-                    self.read_char();
-                    from_utf8(&[ch, self.ch]).unwrap().to_string();
-                    Token::LTEQ
-                }else{
-                    Token::LT
-                }
-            },
-            b'>' => tok = {
-                if self.peek_char() == b'='{
-                    let ch = self.ch;
-                    self.read_char();
-                    from_utf8(&[ch, self.ch]).unwrap().to_string();
-                    Token::GTEQ
-                }else{
-                    Token::GT
-                }
-            },
+            b'<' => tok = self.if_next(b'=', Token::LTEQ, Token::LT),
+            b'>' => tok = self.if_next(b'=', Token::GTEQ, Token::GT),
             b';' => tok = Token::SEMICOLON,
             b':' => tok = Token::COLON,
             b',' => tok = Token::COMMA,
@@ -166,19 +139,17 @@ impl Lexer {
         b'0' <= ch && ch <= b'9'
     }
 
+    fn if_next(&mut self, second: u8, matched: Token, single: Token) -> Token {
+        if self.peek_char() == second {
+            self.read_char();
+            matched
+        } else {
+            single
+        }
+    }
+
     pub fn lookup_ident(ident: &str) -> token::Token {
-        let map: HashMap<&str, Token> = HashMap::from([
-            ("fn", Token::FUNCTION),
-            ("let", Token::LET),
-            ("true", Token::TRUE),
-            ("false", Token::FALSE),
-            ("if", Token::IF),
-            ("else", Token::ELSE),
-            ("return", Token::RETURN),
-        ]);
-        map.get(ident)
-            .unwrap_or(&Token::IDENT(ident.to_string()))
-            .clone()
+        keyword_token(ident).unwrap_or_else(|| Token::IDENT(ident.to_string()))
     }
 
     pub fn skip_whitespace(&mut self) {
